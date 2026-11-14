@@ -1,0 +1,21 @@
+# 渲染产物
+out/
+*.mp4
+*.mov
+*.webm
+
+# 截帧
+shots*/
+*.png
+*.jpg
+!examples/preview/*.png
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# 系统
+.DS_Store
+Thumbs.db

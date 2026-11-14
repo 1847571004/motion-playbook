@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>学会了 · 12s</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{display:block;max-width:100%;max-height:100%}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="1920" height="1080"></canvas></div>
+<script>
+// ============================================================
+//  学会了 · 12 秒
+//  方法：v2.1 第六节七步
+//   1 本质：一句话被拆开、又重新落定
+//   2 结构：M4 一个元素串全片 + M9 情绪弧线（乱→理→清）
+//   3 物质：纸 + 墨 + 一枚实体圆点 → 24fps 基底
+//   4 锚点：纸面 / 已落定的字 / 地平线
+//   5 曲线：u^a(1-u)^b（b>a 惯性）；落字 1 帧过冲 1.15×
+//   6 伴随：影子随高度收紧 + 纸面凹痕 + 落定微弹一次
+//   7 节奏：0.5s hook；9s 英雄时刻；结尾定格+呼吸
+// ============================================================
+const W = 1920, H = 1080;
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+// ---------- 确定性随机（全库统一写法：mulberry32 + 惰性初始化）----------
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const RNG = mulberry32(20261114);
+
+// ---------- 工具 ----------
+const clamp=(x,a,b)=>x<a?a:x>b?b:x;
+const lerp=(a,b,t)=>a+(b-a)*t;
+const ss=(a,b,x)=>{const t=clamp((x-a)/(b-a),0,1);return t*t*(3-2*t)};
+// 速度 ∝ u^a(1-u)^b 的归一化位置（b>a 有惯性尾巴）
+// 位置 = 速度的积分 / 总积分，严格单调 0→1
+function inertia(u,a=2.2,b=3.6){
+  if(u<=0) return 0;
+  if(u>=1) return 1;
+  const N=24; let sp=0, st=0;
+  for(let i=0;i<N;i++){
+    const x=(i+0.5)*u/N;               // 0..u 的积分
+    sp += Math.pow(x,a-1)*Math.pow(1-x,b-1);
+    const y=(i+0.5)/N;                 // 0..1 的积分（归一化用）
+    st += Math.pow(y,a-1)*Math.pow(1-y,b-1);
+  }
+  return u*sp/st;
+}
+
+// ---------- 颜色（强调色只有一处：朱红）----------
+const PAPER='#F2E9D2', PAPER_D='#E4D8BC', INK='#1B1A18', INK_DIM='#5A554A', RED='#C8102E';
+
+// ---------- 纸纹：一次性缓存到离屏 canvas（H1 的做法）----------
+let paperTex=null;
+function makePaper(){
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const g=c.getContext('2d');
+  g.fillStyle=PAPER; g.fillRect(0,0,W,H);
+  // 5000 个 1–3px 小点，一半暖一半白，α 0.045–0.095
+  for(let i=0;i<5000;i++){
+    const x=RNG()*W, y=RNG()*H, s=1+RNG()*2;
+    g.fillStyle = RNG()<0.5 ? 'rgba(140,122,85,'+(0.045+RNG()*0.05)+')'
+                            : 'rgba(255,250,240,'+(0.045+RNG()*0.05)+')';
+    g.fillRect(x,y,s,s);
+  }
+  // 极淡的暗角
+  const vg=g.createRadialGradient(W/2,H/2,H*0.35,W/2,H/2,Math.hypot(W,H)*0.62);
+  vg.addColorStop(0,'rgba(120,100,60,0)'); vg.addColorStop(1,'rgba(120,100,60,0.10)');
+  g.fillStyle=vg; g.fillRect(0,0,W,H);
+  return c;
+}
+
+// ---------- 字：落下 → 落定冻结 ----------
+// 12 个字，从乱到理，最后落到一句话
+const CHARS = [
+  // t0=开始下落  x,y=落点  rot=最终角度  size
+  {t0:0.55, x:0.20, y:0.34, rot:-0.22, sz:0.115, ch:'学'},
+  {t0:1.15, x:0.72, y:0.26, rot: 0.17, sz:0.100, ch:'会'},
+  {t0:1.70, x:0.42, y:0.62, rot:-0.35, sz:0.088, ch:'了'},
+  {t0:2.30, x:0.84, y:0.58, rot: 0.29, sz:0.105, ch:'不'},
+  {t0:2.85, x:0.14, y:0.70, rot: 0.12, sz:0.078, ch:'是'},
+  {t0:3.40, x:0.60, y:0.80, rot:-0.16, sz:0.092, ch:'记'},
+  {t0:3.95, x:0.30, y:0.20, rot: 0.24, sz:0.070, ch:'住'},
+  {t0:4.55, x:0.90, y:0.38, rot:-0.28, sz:0.082, ch:'是'},
+  {t0:5.10, x:0.50, y:0.46, rot: 0.08, sz:0.066, ch:'用'},
+  {t0:5.70, x:0.08, y:0.44, rot:-0.19, sz:0.075, ch:'得'},
+  {t0:6.25, x:0.78, y:0.72, rot: 0.21, sz:0.086, ch:'出'},
+  {t0:6.80, x:0.66, y:0.14, rot:-0.11, sz:0.068, ch:'来'},
+];
+// 落定时间 = t0 + 下落时长
+const FALL = 0.62;
+CHARS.forEach((c,i)=>{ c.land = c.t0 + FALL; c.i=i; });
+
+// ---------- 圆点：串全片的那个元素（M4）----------
+// 它不能瞬移，只能连续地动过去
+// 关键帧：砸进纸面 → 绕行 → 9s 扫开一切 → 收进句号
+const DOT_KEYS = [
+  {t:0.00, x:0.50, y:-0.18, s:1.00},   // 从画面上方落下
+  {t:0.42, x:0.50, y:0.52, s:1.00},   // 砸进纸面（hook）
+  {t:0.55, x:0.50, y:0.50, s:1.00},   // 微弹
+  {t:1.30, x:0.40, y:0.40, s:0.92},
+  {t:2.40, x:0.62, y:0.36, s:0.86},
+  {t:3.60, x:0.34, y:0.58, s:0.80},
+  {t:4.80, x:0.70, y:0.52, s:0.74},
+  {t:6.00, x:0.44, y:0.30, s:0.70},
+  {t:7.20, x:0.58, y:0.66, s:0.66},
+  {t:8.20, x:0.50, y:0.50, s:0.62},   // 蓄势
+  {t:9.00, x:0.50, y:0.50, s:2.20},   // 英雄时刻：膨胀扫开
+  {t:9.55, x:0.50, y:0.50, s:0.55},
+  {t:10.40,x:0.86, y:0.80, s:0.42},   // 退到句末
+  {t:12.00,x:0.86, y:0.80, s:0.42},
+];
+function dotAt(t){
+  let i=0; while(i<DOT_KEYS.length-1 && DOT_KEYS[i+1].t<=t) i++;
+  const a=DOT_KEYS[i], b=DOT_KEYS[Math.min(i+1,DOT_KEYS.length-1)];
+  if(b.t<=a.t) return {x:a.x,y:a.y,s:a.s};
+  const u=clamp((t-a.t)/(b.t-a.t),0,1);
+  const e=inertia(u,1.8,3.2);
+  return {x:lerp(a.x,b.x,e), y:lerp(a.y,b.y,e), s:lerp(a.s,b.s,e)};
+}
+
+// ---------- 抽帧：字走 12fps，摄影机/光走 24fps（混合帧率）----------
+const q12 = t => Math.floor(t*12)/12;   // 角色/字：一拍二
+// 摄影机、光、纸面微动：每帧（24fps 由渲染器保证）
+
+// ---------- 摄影机：极缓慢的漂移 + 落字时的微震 ----------
+function camAt(t){
+  // 整体极缓推近（0.5%），像纸被慢慢靠近
+  const push = 1 + 0.006*ss(0,12,t);
+  // 呼吸：b>a 的惯性曲线，不要 sin 硬摆
+  const bx = (inertia(clamp(t/12,0,1),1.6,2.6)-0.5)*0.012;
+  const by = (inertia(clamp(t/12,0,1),1.9,2.2)-0.5)*0.008;
+  // 落字的微震（只有字落定那一下，很短）
+  let sh=0;
+  for(const c of CHARS){
+    const age=t-c.land;
+    if(age>=0 && age<0.16) sh += 5.0*Math.exp(-age*26);
+  }
+  // 9s 英雄时刻的一记大震
+  const hage = t-9.0;
+  if(hage>=0 && hage<0.4) sh += 16*Math.exp(-hage*11);
+  // 震动方向必须是 t 的确定性函数（不能调用全局 RNG，否则每次重画都不一样）
+  const r1 = mulberry32(Math.floor(t*24)*104729 + 1)();
+  const r2 = mulberry32(Math.floor(t*24)*104729 + 7)();
+  return {push, x:bx*W, y:by*H, sh,
+          shx:(r1*2-1)*sh, shy:(r2*2-1)*sh,
+          rot:(inertia(clamp(t/12,0,1),2.0,2.4)-0.5)*0.004};
+}
+
+// ---------- 画一个字（描边两遍：M1）----------
+function drawChar(g, ch, x, y, size, alpha, rot, squashY){
+  g.save();
+  g.translate(x,y); g.rotate(rot); g.scale(1, squashY);
+  g.font = '700 '+size+'px "Songti SC","SimSun","Noto Serif SC",serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  // 第一遍：实
+  g.fillStyle='rgba(27,26,24,'+alpha+')';
+  g.fillText(ch,0,0);
+  // 第二遍：偏移 1.5px、更细、半透明 → 墨在纸上洇开一点
+  g.fillStyle='rgba(27,26,24,'+(alpha*0.55)+')';
+  g.fillText(ch,1.5,1.5);
+  g.restore();
+}
+
+// ---------- 主绘制：纯函数 draw(t) ----------
+function draw(t){
+  const tq = q12(t);          // 字用抽帧时间
+  const cam = camAt(t);
+
+  ctx.save();
+  ctx.clearRect(0,0,W,H);
+
+  // 纸面（锚点：永不动）
+  if(!paperTex) paperTex = makePaper();
+  ctx.drawImage(paperTex,0,0);
+
+  // 摄影机
+  ctx.translate(W/2 + cam.shx, H/2 + cam.shy);
+  ctx.rotate(cam.rot);
+  ctx.scale(cam.push, cam.push);
+  ctx.translate(-W/2, -H/2);
+
+  // ---- 地平线（锚点：不动，只在开头画出）----
+  const hl = ss(0.05, 0.7, t);
+  ctx.strokeStyle='rgba(27,26,24,0.30)'; ctx.lineWidth=1.6;
+  ctx.beginPath();
+  ctx.moveTo(W*0.06, H*0.92); ctx.lineTo(lerp(W*0.06, W*0.94, hl), H*0.92);
+  ctx.stroke();
+
+  // ---- 字 ----
+  for(const c of CHARS){
+    if(tq < c.t0) continue;
+    const age = tq - c.t0;
+    const p = clamp(age/FALL, 0, 1);
+    // 位置：从上方落下，用 b>a 的惯性（尾巴拖长）
+    const e = inertia(p, 1.7, 3.4);
+    const yFrom = c.y - 0.42;                 // 从上方 42% 屏高落下
+    const yNow = lerp(yFrom, c.y, e);
+    const xNow = c.x;
+    // 影子：随高度收紧（L13/L58）——越高越散越大越淡
+    const hgt = clamp(1-e, 0, 1);
+    const shadowSpread = lerp(1.0, 1.55, hgt);
+    const shadowAlpha  = lerp(0.30, 0.09, hgt);
+    const size = c.sz * H;
+
+    const px = xNow*W, py = yNow*H;
+    const sy = c.y*H;                          // 影子落在地面（同一 y）
+
+    // 影子（横向压扁的椭圆）
+    ctx.save();
+    ctx.globalAlpha = shadowAlpha;
+    ctx.fillStyle='#3A3222';
+    ctx.beginPath();
+    ctx.ellipse(px+6, sy+size*0.40, size*0.42*shadowSpread, size*0.115*shadowSpread, 0, 0, Math.PI*2);
+    ctx.fill();
+    ctx.restore();
+
+    // 落定后的 squash：过冲 1.15 → 1（1 帧过冲）
+    let sqY = 1, al = 1;
+    if(p >= 1){
+      const la = tq - c.land;
+      if(la < 0.30){
+        const k = la/0.30;
+        // 衰减余弦，体积守恒
+        const wob = Math.cos(k*Math.PI*2.2)*Math.exp(-k*7)*0.13;
+        sqY = 1 - wob;
+      }
+    } else {
+      al = ss(0, 0.25, p);
+      sqY = 1 + 0.05*(1-p);                   // 下落中略拉长
+    }
+
+    // 9s 英雄时刻：字被一个动作扫开（元素带动的转场，不是 crossfade）
+    let fx = 0, fy = 0, frot = 0, falpha = 1;
+    const sweep = t - 9.0;
+    if(sweep > 0){
+      const k = clamp(sweep/0.85, 0, 1);
+      const dir = (c.i % 2 === 0) ? -1 : 1;
+      const dist = inertia(k, 1.4, 3.0);
+      fx = dir * dist * W * 0.75;
+      fy = -dist * H * 0.10;
+      frot = dir * dist * 0.55;
+      falpha = 1 - ss(0.15, 0.95, k);
+    }
+
+    if(falpha > 0.002){
+      ctx.save();
+      ctx.globalAlpha = falpha;
+      ctx.translate(fx, fy);
+      drawChar(ctx, c.ch, px, py, size, al, c.rot + frot, sqY);
+      ctx.restore();
+    }
+  }
+
+  // ---- 9.6s 之后：一句话落定（三个字，用同一套落下规则）----
+  const LINE = '学会了';
+  const lineT = 9.75;
+  if(t >= lineT){
+    const fs = H*0.185;
+    const totalW = fs*LINE.length*1.06;
+    const baseY = H*0.52;
+    for(let i=0;i<LINE.length;i++){
+      const t0 = lineT + i*0.16;
+      if(tq < t0) continue;
+      const age = tq - t0;
+      const p = clamp(age/0.55, 0, 1);
+      const e = inertia(p, 1.7, 3.4);
+      const x = W*0.5 - totalW/2 + fs*0.53 + i*fs*1.06;
+      const y = lerp(baseY - H*0.30, baseY, e);
+      const hgt = clamp(1-e,0,1);
+      // 影子
+      ctx.save();
+      ctx.globalAlpha = lerp(0.30,0.09,hgt);
+      ctx.fillStyle='#3A3222';
+      ctx.beginPath();
+      ctx.ellipse(x+7, baseY+fs*0.40, fs*0.40*lerp(1,1.5,hgt), fs*0.10*lerp(1,1.5,hgt),0,0,Math.PI*2);
+      ctx.fill();
+      ctx.restore();
+
+      let sqY = 1;
+      if(p>=1){
+        const la = tq-(t0+0.55);
+        if(la<0.30){ const k=la/0.30; sqY = 1 - Math.cos(k*Math.PI*2.2)*Math.exp(-k*7)*0.12; }
+      } else sqY = 1 + 0.05*(1-p);
+
+      // 最后一个字用强调色（强调色只一处）
+      if(i === LINE.length-1){
+        ctx.save();
+        ctx.translate(x,y); ctx.scale(1,sqY);
+        ctx.font='700 '+fs+'px "Songti SC","SimSun","Noto Serif SC",serif';
+        ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.fillStyle='rgba(200,16,46,'+ss(0,0.4,p)+')';
+        ctx.fillText(LINE[i],0,0);
+        ctx.fillStyle='rgba(200,16,46,'+(0.5*ss(0,0.4,p))+')';
+        ctx.fillText(LINE[i],1.8,1.8);
+        ctx.restore();
+      } else {
+        drawChar(ctx, LINE[i], x, y, fs, 1, 0, sqY);
+      }
+    }
+  }
+
+  // ---- 圆点（串全片的元素）----
+  const d = dotAt(t);
+  const dx = d.x*W, dy = d.y*H;
+  const dr = H*0.030*d.s;
+  // 圆点的影子（同样随高度）
+  const dHgt = clamp((0.52 - d.y)/0.7 + 0.35, 0, 1);
+  ctx.save();
+  ctx.globalAlpha = lerp(0.28, 0.07, dHgt);
+  ctx.fillStyle='#3A3222';
+  ctx.beginPath(); ctx.ellipse(dx+5, H*0.92, dr*lerp(1,1.7,dHgt), dr*0.34*lerp(1,1.7,dHgt),0,0,Math.PI*2); ctx.fill();
+  ctx.restore();
+
+  if(t < 9.9 || t > 10.6){
+    ctx.save();
+    // 砸进纸面那一下：纸面凹痕（伴随现象）
+    const hitAge = t - 0.42;
+    if(hitAge > 0 && hitAge < 0.5){
+      ctx.globalAlpha = 0.16*Math.exp(-hitAge*7);
+      ctx.fillStyle='#7A6A45';
+      ctx.beginPath(); ctx.arc(dx,dy,dr*(1.9+hitAge*3.4),0,Math.PI*2); ctx.fill();
+    }
+    // 圆点本体：墨 + 一点点高光（不是发光）
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = RED;
+    ctx.beginPath(); ctx.arc(dx,dy,dr,0,Math.PI*2); ctx.fill();
+    // 描边两遍
+    ctx.strokeStyle='rgba(27,26,24,0.55)'; ctx.lineWidth=Math.max(1.5, dr*0.055);
+    ctx.beginPath(); ctx.arc(dx,dy,dr,0,Math.PI*2); ctx.stroke();
+    // 一点点偏上的暗，让它有体积（不是发光）
+    ctx.globalAlpha=0.18; ctx.fillStyle='#FFFFFF';
+    ctx.beginPath(); ctx.arc(dx-dr*0.26, dy-dr*0.30, dr*0.26,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+
+  // ---- 纸面颗粒（覆盖在一切之上，防 banding + 统一质感）----
+  // 用极轻的噪点，每 2 帧变一次（boil，不是每帧乱跳）
+  const seedFrame = Math.floor(t*12);
+  const rr = mulberry32(seedFrame*7919);
+  ctx.save();
+  ctx.globalAlpha = 0.035;
+  ctx.fillStyle = '#6B5B3A';
+  for(let i=0;i<900;i++){
+    const x=rr()*W, y=rr()*H;
+    ctx.fillRect(x,y,1.6,1.6);
+  }
+  ctx.restore();
+
+  // ---- 底部一行小字（页脚，极淡）----
+  const footA = ss(1.0,2.2,t)*(1-ss(11.2,12,t));
+  if(footA>0){
+    ctx.save();
+    ctx.globalAlpha = footA*0.42;
+    ctx.fillStyle = INK_DIM;
+    ctx.font = '400 26px "Songti SC","SimSun",serif';
+    ctx.textAlign='left'; ctx.textBaseline='alphabetic';
+    ctx.fillText('— 不是记住，是说出来', W*0.075, H*0.955);
+    ctx.textAlign='right';
+    ctx.fillText('12 s', W*0.925, H*0.955);
+    ctx.restore();
+  }
+}
+
+// ============================================================
+//  播放 + 导出接口
+// ============================================================
+const params = new URLSearchParams(location.search);
+const EXPORT = params.get('export') === '1';
+const FIXED_T = params.has('t') ? parseFloat(params.get('t')) : null;
+
+let t0 = null, paused = false, curT = 0;
+
+function loop(now){
+  if(t0 === null) t0 = now;
+  if(!paused) curT = (now - t0)/1000;
+  draw(curT);
+  requestAnimationFrame(loop);
+}
+
+if(EXPORT){
+  // 导出模式：只画 t=0，等 renderAt 调用
+  draw(0);
+  window.renderAt = function(t){ draw(t); };
+  window.__ready = true;
+} else if(FIXED_T !== null){
+  draw(FIXED_T);
+  window.renderAt = function(t){ draw(t); };
+} else {
+  requestAnimationFrame(loop);
+  window.renderAt = function(t){ draw(t); };
+  addEventListener('keydown', e=>{
+    if(e.code === 'Space'){ e.preventDefault(); paused = !paused; if(!paused) t0 = performance.now() - curT*1000; }
+  });
+}
+</script>
+</body>
+</html>
